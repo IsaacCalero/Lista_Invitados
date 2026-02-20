@@ -1,60 +1,65 @@
 import { useState, useEffect } from 'react';
+import { createClient } from '@supabase/supabase-js';
 
-const INVITADOS_INICIALES = [
-  { id: 1, nombre: "Familia Parco Cadena", cupos: 2, asistieron: 0 },
-  { id: 2, nombre: "Familia Garzón Tituaña", cupos: 2, asistieron: 0 },
-  { id: 3, nombre: "Sr. Fernando y esposa", cupos: 2, asistieron: 0 },
-  { id: 4, nombre: "Sra. Patricia Cadena e hijas", cupos: 3, asistieron: 0 },
-  { id: 5, nombre: "Sr. Paul y Acompañante", cupos: 2, asistieron: 0 },
-  { id: 6, nombre: "Sr. Alejandro Salcedo", cupos: 1, asistieron: 0 },
-  { id: 7, nombre: "Sra. Bélgica Bastidas", cupos: 2, asistieron: 0 },
-  { id: 8, nombre: "Sra. Alicia Cadena", cupos: 2, asistieron: 0 },
-  { id: 9, nombre: "Familia Murillo Cadena", cupos: 4, asistieron: 0 },
-  { id: 10, nombre: "Sr. Byron Salcedo", cupos: 3, asistieron: 0 },
-  { id: 11, nombre: "Sra. Patricia Triviño", cupos: 1, asistieron: 0 },
-  { id: 12, nombre: "Srta. Giannela Arroyo", cupos: 1, asistieron: 0 },
-  { id: 13, nombre: "Srta. Camila Aguirre", cupos: 1, asistieron: 0 },
-  { id: 14, nombre: "Srta. Joyce Narváez", cupos: 1, asistieron: 0 },
-  { id: 15, nombre: "Sr. Oscar Gutiérrez", cupos: 1, asistieron: 0 },
-  { id: 16, nombre: "Srta. Danna Mejia", cupos: 1, asistieron: 0 },
-  { id: 17, nombre: "Sr. Cando", cupos: 1, asistieron: 0 }
-];
+// Conectar con Supabase usando las variables de entorno
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 function App() {
-  // Inicializamos el estado leyendo el localStorage primero
-  const [invitados, setInvitados] = useState(() => {
-    const datosGuardados = localStorage.getItem('listaAsistenciaEmily');
-    if (datosGuardados) {
-      return JSON.parse(datosGuardados);
-    }
-    return INVITADOS_INICIALES;
-  });
-  
+  const [invitados, setInvitados] = useState([]);
   const [busqueda, setBusqueda] = useState("");
 
-  // Cada vez que 'invitados' cambia, lo guardamos en localStorage
+  // Cargar datos y escuchar cambios en tiempo real
   useEffect(() => {
-    localStorage.setItem('listaAsistenciaEmily', JSON.stringify(invitados));
-  }, [invitados]);
+    // 1. Traer la lista inicial
+    const fetchInvitados = async () => {
+      const { data } = await supabase.from('invitados').select('*').order('id', { ascending: true });
+      if (data) setInvitados(data);
+    };
+    fetchInvitados();
+
+    // 2. Suscribirse a los cambios en la base de datos (Tiempo Real)
+    const channel = supabase
+      .channel('schema-db-changes')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'invitados' },
+        (payload) => {
+          // Cuando el de la puerta marca a alguien, esto actualiza tu pantalla al instante
+          setInvitados((prev) => {
+            const index = prev.findIndex(inv => inv.id === payload.new.id);
+            if (index !== -1) {
+              const nuevaLista = [...prev];
+              nuevaLista[index] = payload.new;
+              return nuevaLista;
+            }
+            return prev;
+          });
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
 
   const totalCupos = invitados.reduce((acc, inv) => acc + inv.cupos, 0);
   const totalAsistentes = invitados.reduce((acc, inv) => acc + inv.asistieron, 0);
 
-  const toggleAsistencia = (id) => {
-    setInvitados(invitados.map(inv => {
-      if (inv.id === id) {
-        // Marca la asistencia completa o la quita
-        return { ...inv, asistieron: inv.asistieron === 0 ? inv.cupos : 0 };
-      }
-      return inv;
-    }));
-  };
+  // Actualizar la base de datos cuando haces clic
+  const toggleAsistencia = async (inv) => {
+    const nuevosAsistentes = inv.asistieron === 0 ? inv.cupos : 0;
+    
+    // Actualizamos localmente primero para que se sienta rápido
+    setInvitados(invitados.map(i => i.id === inv.id ? { ...i, asistieron: nuevosAsistentes } : i));
 
-  // Botón para reiniciar la lista si quieres hacer pruebas
-  const limpiarDatos = () => {
-    if(window.confirm("¿Seguro que quieres borrar toda la asistencia?")) {
-      setInvitados(INVITADOS_INICIALES);
-    }
+    // Mandamos el cambio a Supabase
+    await supabase
+      .from('invitados')
+      .update({ asistieron: nuevosAsistentes })
+      .eq('id', inv.id);
   };
 
   const filtrados = invitados.filter(inv => 
@@ -84,7 +89,7 @@ function App() {
           {filtrados.map(inv => (
             <div 
               key={inv.id} 
-              onClick={() => toggleAsistencia(inv.id)}
+              onClick={() => toggleAsistencia(inv)}
               className={`p-4 rounded-xl border-2 transition-all cursor-pointer flex justify-between items-center ${
                 inv.asistieron > 0 ? 'bg-green-50 border-green-500' : 'bg-white border-transparent shadow-sm'
               }`}
@@ -99,7 +104,6 @@ function App() {
             </div>
           ))}
         </div>
-        
       </main>
     </div>
   );
